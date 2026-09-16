@@ -1,0 +1,25 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+
+# Virtual Environments
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Honeypot runtime files & telemetry logs
+server.key
+honeypot_attacks.json
+*.log
+.env
