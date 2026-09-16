@@ -137,7 +137,8 @@ FULL_LINUX_VFS = {
                             "su": "[ELF binary]",
                             "sudo": "[ELF binary]",
                             "nano": "[ELF binary]",
-                            "vim": "[ELF binary]"
+                            "vim": "[ELF binary]",
+                            "iptables": "[ELF binary]"
                         }
                     }
                 }
@@ -149,6 +150,12 @@ FULL_LINUX_VFS = {
                     ".bash_history": "ls -la\ncd app\ncat main.py\nwhoami\nuname -a\n",
                     ".bashrc": "# ~/.bashrc: executed by bash(1) for non-login shells.\nexport PS1='\\u@\\h:\\w\\$ '\nexport PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n",
                     "backup.tar.gz": "[binary gzip archive data]\n",
+                    ".aws": {
+                        "type": "dir",
+                        "contents": {
+                            "credentials": "[default]\laws_access_key_id = AKIAIOSFODNN7EXAMPLE\laws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n"
+                        }
+                    },
                     "app": {
                         "type": "dir",
                         "contents": {
@@ -174,6 +181,7 @@ FULL_LINUX_VFS = {
                 "type": "dir",
                 "contents": {
                     "passwd": "root:x:0:0:root:/root:/bin/bash\ndaemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin\nubuntu:x:1000:1000:Ubuntu,,,:/home/ubuntu:/bin/bash\n",
+                    "shadow": "root:$6$rounds=5000$saltsalt$encryptedhashstringhere:19000:0:99999:7:::\ndaemon:*:18000:0:99999:7:::\n",
                     "group": "root:x:0:\nubuntu:x:1000:\n",
                     "hosts": "127.0.0.1 localhost ubuntu-srv\n::1 localhost ip6-localhost ip6-loopback\n",
                     "hostname": "ubuntu-srv\n",
@@ -273,8 +281,12 @@ def simulate_command(command, session_state):
     vfs = session_state["vfs"]
 
     # Security keyword inspection for alerting
-    if any(kw in cmd_trimmed.lower() for kw in ["base64", "chmod +x", "wget", "curl", "nc ", "bash -i", "python3 -c"]):
+    if any(kw in cmd_trimmed.lower() for kw in ["base64", "chmod +x", "wget", "curl", "nc ", "bash -i", "python3 -c", "shadow"]):
         log_alert(f"Suspicious command detected from IP {session_state.get('client_ip', 'unknown')}: {cmd_trimmed}")
+
+    # Honeytoken canary trigger check
+    if "shadow" in cmd_trimmed or "credentials" in cmd_trimmed or "id_rsa" in cmd_trimmed:
+        log_alert(f"HONEYTOKEN TRIPPED! Attacker accessed sensitive file target: {cmd_trimmed} from IP {session_state.get('client_ip', 'unknown')}")
 
     # Handle `su` user switching
     if cmd_name == "su":
@@ -289,6 +301,14 @@ def simulate_command(command, session_state):
             return ""
         else:
             return f"su: user {target_user} does not exist"
+
+    # Handle `sudo` privilege escalation
+    if cmd_name == "sudo":
+        if len(parts) > 1:
+            sub_cmd = " ".join(parts[1:])
+            return simulate_command(sub_cmd, session_state)
+        else:
+            return "usage: sudo -h | -K | -k | -V"
 
     # Handle file redirection using > and >> operators
     if ">" in parts or ">>" in parts:
@@ -422,6 +442,8 @@ def simulate_command(command, session_state):
             return ""
         else:
             return f"{cmd_name}: failed to remove '{parts[1]}': No such file or directory"
+    elif cmd_name == "iptables":
+        return "Chain INPUT (policy ACCEPT)\nnum  target     prot opt source               destination\n\nChain FORWARD (policy ACCEPT)\nnum  target     prot opt source               destination\n\nChain OUTPUT (policy ACCEPT)\nnum  target     prot opt source               destination"
     elif cmd_name in ["nano", "vim", "vi"]:
         target_file = parts[1] if len(parts) > 1 else "unnamed.txt"
         target_path = resolve_path(cwd, target_file)
