@@ -13,17 +13,14 @@ from google.genai import types
 from rich.console import Console
 from rich.panel import Panel
 
-# Initialize console for terminal output formatting
 console = Console()
 
-# Initialize Gemini API client using environment variables
 API_KEY = os.environ.get("GEMINI_API_KEY")
 if not API_KEY:
     console.print("[bold red][!] Error: GEMINI_API_KEY environment variable is not set.[/bold red]")
     sys.exit(1)
 client = genai.Client(api_key=API_KEY)
 
-# Path for persistent SSH RSA host key
 KEY_FILE = "server.key"
 if not os.path.exists(KEY_FILE):
     host_key = paramiko.RSAKey.generate(2048)
@@ -31,8 +28,8 @@ if not os.path.exists(KEY_FILE):
 else:
     host_key = paramiko.RSAKey(filename=KEY_FILE)
 
-# JSON log file for storing attack telemetry
 LOG_FILE = "honeypot_attacks.json"
+ALERT_FILE = "alerts.log"
 
 def log_attack(data):
     """Append security event telemetry to JSON log file."""
@@ -46,6 +43,17 @@ def log_attack(data):
     logs.append(data)
     with open(LOG_FILE, "w", encoding="utf-8") as f:
         json.dump(logs, f, indent=2)
+
+def log_alert(message):
+    """Write high-priority security alerts to alert log file."""
+    timestamp = datetime.datetime.now().isoformat()
+    alert_entry = f"[{timestamp}] ALERT: {message}\n"
+    try:
+        with open(ALERT_FILE, "a", encoding="utf-8") as f:
+            f.write(alert_entry)
+    except:
+        pass
+    console.print(f"[bold red][SECURITY ALERT] {message}[/bold red]")
 
 class HoneypotServer(paramiko.ServerInterface):
     """Paramiko server interface for handling SSH authentication and channels."""
@@ -88,7 +96,6 @@ class HoneypotServer(paramiko.ServerInterface):
         """Approve pseudo-terminal allocation requests."""
         return True
 
-# Full hierarchical Debian/Ubuntu virtual filesystem structure
 FULL_LINUX_VFS = {
     "/": {
         "type": "dir",
@@ -109,7 +116,8 @@ FULL_LINUX_VFS = {
                     "touch": "[ELF binary]",
                     "grep": "[ELF binary]",
                     "find": "[ELF binary]",
-                    "clear": "[ELF binary]"
+                    "clear": "[ELF binary]",
+                    "ping": "[ELF binary]"
                 }
             },
             "usr": {
@@ -127,7 +135,9 @@ FULL_LINUX_VFS = {
                             "apt-get": "[ELF binary]",
                             "pip": "[ELF binary]",
                             "su": "[ELF binary]",
-                            "sudo": "[ELF binary]"
+                            "sudo": "[ELF binary]",
+                            "nano": "[ELF binary]",
+                            "vim": "[ELF binary]"
                         }
                     }
                 }
@@ -261,6 +271,10 @@ def simulate_command(command, session_state):
     cmd_name = parts[0] if parts else ""
     cwd = session_state["cwd"]
     vfs = session_state["vfs"]
+
+    # Security keyword inspection for alerting
+    if any(kw in cmd_trimmed.lower() for kw in ["base64", "chmod +x", "wget", "curl", "nc ", "bash -i", "python3 -c"]):
+        log_alert(f"Suspicious command detected from IP {session_state.get('client_ip', 'unknown')}: {cmd_trimmed}")
 
     # Handle `su` user switching
     if cmd_name == "su":
@@ -408,6 +422,19 @@ def simulate_command(command, session_state):
             return ""
         else:
             return f"{cmd_name}: failed to remove '{parts[1]}': No such file or directory"
+    elif cmd_name in ["nano", "vim", "vi"]:
+        target_file = parts[1] if len(parts) > 1 else "unnamed.txt"
+        target_path = resolve_path(cwd, target_file)
+        parent_dir_path = os.path.dirname(target_path) or "/"
+        filename = os.path.basename(target_path)
+        parent_node = get_node_by_path(vfs, parent_dir_path)
+        file_data = ""
+        if parent_node and filename in parent_node["contents"]:
+            file_data = parent_node["contents"][filename]
+        return f"\033[H\033[J--- [ Simulated Editor: {filename} ] ---\n{file_data}\n[ Read {len(file_data.splitlines())} lines ]\n^G Get Help  ^O WriteOut  ^R Read File  ^Y Prev Pg  ^K Cut Text  ^C Cur Pos\n^X Exit"
+    elif cmd_name == "ping":
+        host = parts[1] if len(parts) > 1 else "localhost"
+        return f"PING {host} (127.0.0.1) 56(84) bytes of data.\n64 bytes from 127.0.0.1: icmp_seq=1 ttl=64 time=0.035 ms\n64 bytes from 127.0.0.1: icmp_seq=2 ttl=64 time=0.041 ms\n64 bytes from 127.0.0.1: icmp_seq=3 ttl=64 time=0.038 ms\n\n--- {host} ping statistics ---\n3 packets transmitted, 3 received, 0% packet loss, time 2045ms\nrtt min/avg/max/mdev = 0.035/0.038/0.041/0.002 ms"
     elif cmd_name == "clear":
         return "\033[H\033[J"
     elif cmd_name == "ps":
@@ -485,7 +512,8 @@ def handle_ssh_session(client_sock, client_addr):
         "vfs": copy.deepcopy(FULL_LINUX_VFS),
         "history": [],
         "command_count": 0,
-        "start_time": datetime.datetime.now()
+        "start_time": datetime.datetime.now(),
+        "client_ip": client_ip
     }
 
     system_prompt = (
@@ -610,7 +638,7 @@ def handle_ssh_session(client_sock, client_addr):
             # Try local virtual filesystem simulation first
             output = simulate_command(command, session_state)
 
-            # Fall back to Gemini API if local simulation returns None
+            # Fall back to Gemini API if local simulation returns None (with RPM pacing)
             if output is None:
                 try:
                     console.print("[yellow][*] Pacing before Gemini API call (respecting RPM)...[/yellow]")
