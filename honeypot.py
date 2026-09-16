@@ -13,17 +13,17 @@ from google.genai import types
 from rich.console import Console
 from rich.panel import Panel
 
-
+# Initialize console for terminal output formatting
 console = Console()
 
+# Initialize Gemini API client using environment variables
 API_KEY = os.environ.get("GEMINI_API_KEY")
 if not API_KEY:
     console.print("[bold red][!] Error: GEMINI_API_KEY environment variable is not set.[/bold red]")
     sys.exit(1)
 client = genai.Client(api_key=API_KEY)
 
-
-
+# Path for persistent SSH RSA host key
 KEY_FILE = "server.key"
 if not os.path.exists(KEY_FILE):
     host_key = paramiko.RSAKey.generate(2048)
@@ -31,10 +31,11 @@ if not os.path.exists(KEY_FILE):
 else:
     host_key = paramiko.RSAKey(filename=KEY_FILE)
 
+# JSON log file for storing attack telemetry
 LOG_FILE = "honeypot_attacks.json"
 
-
 def log_attack(data):
+    """Append security event telemetry to JSON log file."""
     logs = []
     if os.path.exists(LOG_FILE):
         try:
@@ -46,17 +47,15 @@ def log_attack(data):
     with open(LOG_FILE, "w", encoding="utf-8") as f:
         json.dump(logs, f, indent=2)
 
-
 class HoneypotServer(paramiko.ServerInterface):
+    """Paramiko server interface for handling SSH authentication and channels."""
     def __init__(self, client_ip):
         self.client_ip = client_ip
         self.username = ""
-        
         self.password = ""
 
-
-    
     def check_auth_password(self, username, password):
+        """Accept all passwords and log authentication attempts."""
         self.username = username
         self.password = password
         console.print(f"[bold red][!] Auth attempt from {self.client_ip} | User: {username} | Pass: {password}[/bold red]")
@@ -70,23 +69,26 @@ class HoneypotServer(paramiko.ServerInterface):
         return paramiko.AUTH_SUCCESSFUL
 
     def check_auth_publickey(self, username, key):
+        """Accept public key authentication attempts."""
         self.username = username
         console.print(f"[bold yellow][!] Public key auth attempt from {self.client_ip} | User: {username}[/bold yellow]")
         return paramiko.AUTH_SUCCESSFUL
 
     def check_channel_request(self, kind, chanid):
+        """Approve incoming session channel requests."""
         if kind == 'session':
             return paramiko.OPEN_SUCCEEDED
         return paramiko.OPEN_FAILED_ADMINISTRATIVELY_PROHIBITED
 
     def check_channel_shell_request(self, channel):
+        """Approve shell invocation requests."""
         return True
 
     def check_channel_pty_request(self, channel, term, width, height, pxwidth, pxheight, modes):
+        """Approve pseudo-terminal allocation requests."""
         return True
 
-
-
+# Full hierarchical Debian/Ubuntu virtual filesystem structure
 FULL_LINUX_VFS = {
     "/": {
         "type": "dir",
@@ -221,9 +223,8 @@ FULL_LINUX_VFS = {
     }
 }
 
-
-
 def resolve_path(cwd, path):
+    """Resolve relative or absolute paths against current working directory."""
     if not path:
         return cwd
     if path.startswith("/"):
@@ -236,15 +237,12 @@ def resolve_path(cwd, path):
         if p == "..":
             if resolved:
                 resolved.pop()
-                
         elif p != "." and p:
             resolved.append(p)
-            
     return "/" + "/".join(resolved)
 
-
-
 def get_node_by_path(vfs_root, path):
+    """Retrieve virtual filesystem node dictionary or file content by absolute path."""
     parts = [p for p in path.split("/") if p]
     curr = vfs_root["/"]
     if not parts:
@@ -252,70 +250,61 @@ def get_node_by_path(vfs_root, path):
     for p in parts:
         if curr["type"] == "dir" and p in curr["contents"]:
             curr = curr["contents"][p]
-            
         else:
             return None
-            
     return curr
 
-
-
 def simulate_command(command, session_state):
+    """Simulate common Linux commands locally within the virtual filesystem."""
     cmd_trimmed = command.strip()
     parts = cmd_trimmed.split()
     cmd_name = parts[0] if parts else ""
     cwd = session_state["cwd"]
     vfs = session_state["vfs"]
 
+    # Handle `su` user switching
     if cmd_name == "su":
         target_user = parts[1] if len(parts) > 1 else "root"
         if target_user in ["ubuntu", "guest"]:
             session_state["user"] = target_user
             session_state["cwd"] = f"/home/{target_user}"
             return ""
-            
         elif target_user == "root":
             session_state["user"] = "root"
             session_state["cwd"] = "/root"
             return ""
-            
         else:
             return f"su: user {target_user} does not exist"
 
+    # Handle file redirection using > and >> operators
     if ">" in parts or ">>" in parts:
         mode = ">>" if ">>" in parts else ">"
         idx = parts.index(mode)
         content_parts = parts[:idx]
         target_file = parts[idx+1] if idx+1 < len(parts) else ""
         file_content = " ".join(content_parts).strip()
-        
         if (file_content.startswith('"') and file_content.endswith('"')) or (file_content.startswith("'") and file_content.endswith("'")):
             file_content = file_content[1:-1]
         
         if content_parts and content_parts[0] == "echo":
             file_content = " ".join(content_parts[1:]).strip()
             if (file_content.startswith('"') and file_content.endswith('"')) or (file_content.startswith("'") and file_content.endswith("'")):
-        
                 file_content = file_content[1:-1]
 
         target_path = resolve_path(cwd, target_file)
         parent_dir_path = os.path.dirname(target_path) or "/"
-        
         filename = os.path.basename(target_path)
 
         parent_node = get_node_by_path(vfs, parent_dir_path)
         if parent_node and parent_node["type"] == "dir":
             if mode == ">" or filename not in parent_node["contents"]:
                 parent_node["contents"][filename] = file_content + "\n"
-                
             else:
                 existing = parent_node["contents"][filename]
                 if isinstance(existing, str):
                     parent_node["contents"][filename] = existing + file_content + "\n"
-                    
                 else:
                     parent_node["contents"][filename] = file_content + "\n"
-                    
             return ""
         else:
             return f"bash: {target_file}: No such file or directory"
@@ -324,21 +313,17 @@ def simulate_command(command, session_state):
         return cwd
     elif cmd_name == "whoami":
         return session_state["user"]
-        
     elif cmd_name == "hostname":
         return "ubuntu-srv"
-        
     elif cmd_name == "id":
         usr = session_state["user"]
         uid = "0(root)" if usr == "root" else "1000(ubuntu)"
         gid = "0(root)" if usr == "root" else "1000(ubuntu)"
         return f"uid={uid} gid={gid} groups={gid}"
-        
     elif cmd_name in ["uname", "uname -a"]:
         return "Linux ubuntu-srv 5.15.0-88-generic #98-Ubuntu SMP Mon Oct 2 15:18:56 UTC 2023 x86_64 x86_64 x86_64 GNU/Linux"
     elif cmd_name == "date":
         return datetime.datetime.now().strftime("%a %b %d %H:%M:%S UTC %Y")
-        
     elif cmd_name == "cd":
         target = parts[1] if len(parts) > 1 else ("~" if session_state["user"] == "root" else f"/home/{session_state['user']}")
         if target == "~" or target == "":
@@ -355,7 +340,6 @@ def simulate_command(command, session_state):
     elif cmd_name in ["ls", "ll"]:
         target_dir = cwd
         if len(parts) > 1 and not parts[1].startswith("-"):
-            
             target_dir = resolve_path(cwd, parts[1])
         
         node = get_node_by_path(vfs, target_dir)
@@ -364,7 +348,6 @@ def simulate_command(command, session_state):
             items = list(contents.keys())
             lines = [f"total {len(items) * 4}"]
             for item in sorted(items):
-                
                 sub = contents[item]
                 is_dir = isinstance(sub, dict) and sub.get("type") == "dir"
                 perms = "drwx------" if is_dir else "-rw-r--r--"
@@ -464,6 +447,7 @@ def simulate_command(command, session_state):
     return None
 
 def send_output(channel, text):
+    """Normalize line endings to CRLF and send text across SSH channel."""
     if isinstance(text, bytes):
         text = text.decode("utf-8", errors="ignore")
     formatted = text.replace("\r\n", "\n").replace("\n", "\r\n")
@@ -472,6 +456,7 @@ def send_output(channel, text):
     channel.send(formatted.encode("utf-8"))
 
 def handle_ssh_session(client_sock, client_addr):
+    """Handle incoming SSH client connection and interactive shell loop."""
     client_ip = client_addr[0]
     console.print(f"[bold green][+] Incoming connection from {client_ip}:{client_addr[1]}[/bold green]")
     
@@ -541,13 +526,13 @@ def handle_ssh_session(client_sock, client_addr):
                         escape_buf.append(b)
                         if len(escape_buf) >= 2:
                             seq = bytes(escape_buf)
-                            if seq == b'[A': # Up Arrow
+                            if seq == b'[A': # Up Arrow history navigation
                                 history = session_state["history"]
                                 if history and hist_idx > 0:
                                     hist_idx -= 1
                                     channel.send(b"\r\x1b[K" + prompt.encode('utf-8') + history[hist_idx].encode('utf-8'))
                                     command_bytes = bytearray(history[hist_idx].encode('utf-8'))
-                            elif seq == b'[B': # Down Arrow
+                            elif seq == b'[B': # Down Arrow history navigation
                                 history = session_state["history"]
                                 if history and hist_idx < len(history) - 1:
                                     hist_idx += 1
@@ -561,24 +546,24 @@ def handle_ssh_session(client_sock, client_addr):
                             escape_buf.clear()
                         continue
 
-                    if b == 27:
+                    if b == 27: # ANSI escape sequence start
                         in_escape = True
                         escape_buf.clear()
                         escape_buf.append(b)
                         continue
-                    elif b == 3: # Ctrl+C
+                    elif b == 3: # Ctrl+C interrupt
                         channel.send(b"^C\r\n")
                         command_bytes = bytearray()
                         in_escape = False
                         break
-                    elif b in (127, 8): # Backspace
+                    elif b in (127, 8): # Backspace / DEL handling
                         if len(command_bytes) > 0:
                             command_bytes.pop()
                             channel.send(b"\b \b")
-                    elif b in (10, 13): # Enter
+                    elif b in (10, 13): # Enter key
                         channel.send(b"\r\n")
                         break
-                    elif b == 9: # Tab
+                    elif b == 9: # Tab autocompletion
                         partial = command_bytes.decode('utf-8', errors='ignore')
                         token = partial.split()[-1] if partial.split() else ""
                         vfs = session_state["vfs"]
@@ -622,8 +607,10 @@ def handle_ssh_session(client_sock, client_addr):
                 send_output(channel, "Connection closed.")
                 break
 
+            # Try local virtual filesystem simulation first
             output = simulate_command(command, session_state)
 
+            # Fall back to Gemini API if local simulation returns None
             if output is None:
                 try:
                     console.print("[yellow][*] Pacing before Gemini API call (respecting RPM)...[/yellow]")
@@ -680,6 +667,7 @@ def handle_ssh_session(client_sock, client_addr):
     console.print(f"[dim][- ] Connection closed for {client_ip}[/dim]")
 
 def main():
+    """Start TCP server and spawn worker threads for incoming SSH connections."""
     parser = argparse.ArgumentParser(description="LLM-Powered Intelligent SSH Honeypot")
     parser.add_argument("--host", default="0.0.0.0", help="Listen host")
     parser.add_argument("--port", type=int, default=2222, help="Listen port")
