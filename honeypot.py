@@ -13,6 +13,7 @@ from google.genai import types
 from rich.console import Console
 from rich.panel import Panel
 
+
 console = Console()
 
 API_KEY = os.environ.get("GEMINI_API_KEY")
@@ -20,6 +21,8 @@ if not API_KEY:
     console.print("[bold red][!] Error: GEMINI_API_KEY environment variable is not set.[/bold red]")
     sys.exit(1)
 client = genai.Client(api_key=API_KEY)
+
+
 
 KEY_FILE = "server.key"
 if not os.path.exists(KEY_FILE):
@@ -29,6 +32,7 @@ else:
     host_key = paramiko.RSAKey(filename=KEY_FILE)
 
 LOG_FILE = "honeypot_attacks.json"
+
 
 def log_attack(data):
     logs = []
@@ -42,12 +46,16 @@ def log_attack(data):
     with open(LOG_FILE, "w", encoding="utf-8") as f:
         json.dump(logs, f, indent=2)
 
+
 class HoneypotServer(paramiko.ServerInterface):
     def __init__(self, client_ip):
         self.client_ip = client_ip
         self.username = ""
+        
         self.password = ""
 
+
+    
     def check_auth_password(self, username, password):
         self.username = username
         self.password = password
@@ -76,6 +84,8 @@ class HoneypotServer(paramiko.ServerInterface):
 
     def check_channel_pty_request(self, channel, term, width, height, pxwidth, pxheight, modes):
         return True
+
+
 
 FULL_LINUX_VFS = {
     "/": {
@@ -211,6 +221,8 @@ FULL_LINUX_VFS = {
     }
 }
 
+
+
 def resolve_path(cwd, path):
     if not path:
         return cwd
@@ -224,9 +236,13 @@ def resolve_path(cwd, path):
         if p == "..":
             if resolved:
                 resolved.pop()
+                
         elif p != "." and p:
             resolved.append(p)
+            
     return "/" + "/".join(resolved)
+
+
 
 def get_node_by_path(vfs_root, path):
     parts = [p for p in path.split("/") if p]
@@ -236,9 +252,13 @@ def get_node_by_path(vfs_root, path):
     for p in parts:
         if curr["type"] == "dir" and p in curr["contents"]:
             curr = curr["contents"][p]
+            
         else:
             return None
+            
     return curr
+
+
 
 def simulate_command(command, session_state):
     cmd_trimmed = command.strip()
@@ -253,10 +273,12 @@ def simulate_command(command, session_state):
             session_state["user"] = target_user
             session_state["cwd"] = f"/home/{target_user}"
             return ""
+            
         elif target_user == "root":
             session_state["user"] = "root"
             session_state["cwd"] = "/root"
             return ""
+            
         else:
             return f"su: user {target_user} does not exist"
 
@@ -266,28 +288,34 @@ def simulate_command(command, session_state):
         content_parts = parts[:idx]
         target_file = parts[idx+1] if idx+1 < len(parts) else ""
         file_content = " ".join(content_parts).strip()
+        
         if (file_content.startswith('"') and file_content.endswith('"')) or (file_content.startswith("'") and file_content.endswith("'")):
             file_content = file_content[1:-1]
         
         if content_parts and content_parts[0] == "echo":
             file_content = " ".join(content_parts[1:]).strip()
             if (file_content.startswith('"') and file_content.endswith('"')) or (file_content.startswith("'") and file_content.endswith("'")):
+        
                 file_content = file_content[1:-1]
 
         target_path = resolve_path(cwd, target_file)
         parent_dir_path = os.path.dirname(target_path) or "/"
+        
         filename = os.path.basename(target_path)
 
         parent_node = get_node_by_path(vfs, parent_dir_path)
         if parent_node and parent_node["type"] == "dir":
             if mode == ">" or filename not in parent_node["contents"]:
                 parent_node["contents"][filename] = file_content + "\n"
+                
             else:
                 existing = parent_node["contents"][filename]
                 if isinstance(existing, str):
                     parent_node["contents"][filename] = existing + file_content + "\n"
+                    
                 else:
                     parent_node["contents"][filename] = file_content + "\n"
+                    
             return ""
         else:
             return f"bash: {target_file}: No such file or directory"
@@ -296,17 +324,21 @@ def simulate_command(command, session_state):
         return cwd
     elif cmd_name == "whoami":
         return session_state["user"]
+        
     elif cmd_name == "hostname":
         return "ubuntu-srv"
+        
     elif cmd_name == "id":
         usr = session_state["user"]
         uid = "0(root)" if usr == "root" else "1000(ubuntu)"
         gid = "0(root)" if usr == "root" else "1000(ubuntu)"
         return f"uid={uid} gid={gid} groups={gid}"
+        
     elif cmd_name in ["uname", "uname -a"]:
         return "Linux ubuntu-srv 5.15.0-88-generic #98-Ubuntu SMP Mon Oct 2 15:18:56 UTC 2023 x86_64 x86_64 x86_64 GNU/Linux"
     elif cmd_name == "date":
         return datetime.datetime.now().strftime("%a %b %d %H:%M:%S UTC %Y")
+        
     elif cmd_name == "cd":
         target = parts[1] if len(parts) > 1 else ("~" if session_state["user"] == "root" else f"/home/{session_state['user']}")
         if target == "~" or target == "":
@@ -323,6 +355,7 @@ def simulate_command(command, session_state):
     elif cmd_name in ["ls", "ll"]:
         target_dir = cwd
         if len(parts) > 1 and not parts[1].startswith("-"):
+            
             target_dir = resolve_path(cwd, parts[1])
         
         node = get_node_by_path(vfs, target_dir)
@@ -331,6 +364,7 @@ def simulate_command(command, session_state):
             items = list(contents.keys())
             lines = [f"total {len(items) * 4}"]
             for item in sorted(items):
+                
                 sub = contents[item]
                 is_dir = isinstance(sub, dict) and sub.get("type") == "dir"
                 perms = "drwx------" if is_dir else "-rw-r--r--"
