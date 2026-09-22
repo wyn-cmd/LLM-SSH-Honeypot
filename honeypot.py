@@ -19,6 +19,7 @@ API_KEY = os.environ.get("GEMINI_API_KEY")
 if not API_KEY:
     console.print("[bold red][!] Error: GEMINI_API_KEY environment variable is not set.[/bold red]")
     sys.exit(1)
+
 client = genai.Client(api_key=API_KEY)
 
 KEY_FILE = "server.key"
@@ -38,11 +39,14 @@ def log_attack(data):
         try:
             with open(LOG_FILE, "r", encoding="utf-8") as f:
                 logs = json.load(f)
-        except:
+        except (json.JSONDecodeError, OSError):
             pass
     logs.append(data)
-    with open(LOG_FILE, "w", encoding="utf-8") as f:
-        json.dump(logs, f, indent=2)
+    try:
+        with open(LOG_FILE, "w", encoding="utf-8") as f:
+            json.dump(logs, f, indent=2)
+    except OSError as e:
+        console.print(f"[red][-] Failed to write attack log: {e}[/red]")
 
 def log_alert(message):
     """Write high-priority security alerts to alert log file."""
@@ -51,7 +55,7 @@ def log_alert(message):
     try:
         with open(ALERT_FILE, "a", encoding="utf-8") as f:
             f.write(alert_entry)
-    except:
+    except OSError:
         pass
     console.print(f"[bold red][SECURITY ALERT] {message}[/bold red]")
 
@@ -266,7 +270,7 @@ def get_node_by_path(vfs_root, path):
     if not parts:
         return curr
     for p in parts:
-        if curr["type"] == "dir" and p in curr["contents"]:
+        if curr.get("type") == "dir" and "contents" in curr and p in curr["contents"]:
             curr = curr["contents"][p]
         else:
             return None
@@ -280,15 +284,12 @@ def simulate_command(command, session_state):
     cwd = session_state["cwd"]
     vfs = session_state["vfs"]
 
-    # Security keyword inspection for alerting
     if any(kw in cmd_trimmed.lower() for kw in ["base64", "chmod +x", "wget", "curl", "nc ", "bash -i", "python3 -c", "shadow"]):
         log_alert(f"Suspicious command detected from IP {session_state.get('client_ip', 'unknown')}: {cmd_trimmed}")
 
-    # Honeytoken canary trigger check
     if "shadow" in cmd_trimmed or "credentials" in cmd_trimmed or "id_rsa" in cmd_trimmed:
         log_alert(f"HONEYTOKEN TRIPPED! Attacker accessed sensitive file target: {cmd_trimmed} from IP {session_state.get('client_ip', 'unknown')}")
 
-    # Handle `su` user switching
     if cmd_name == "su":
         target_user = parts[1] if len(parts) > 1 else "root"
         if target_user in ["ubuntu", "guest"]:
@@ -302,7 +303,6 @@ def simulate_command(command, session_state):
         else:
             return f"su: user {target_user} does not exist"
 
-    # Handle `sudo` privilege escalation
     if cmd_name == "sudo":
         if len(parts) > 1:
             sub_cmd = " ".join(parts[1:])
@@ -310,7 +310,6 @@ def simulate_command(command, session_state):
         else:
             return "usage: sudo -h | -K | -k | -V"
 
-    # Handle file redirection using > and >> operators
     if ">" in parts or ">>" in parts:
         mode = ">>" if ">>" in parts else ">"
         idx = parts.index(mode)
@@ -330,7 +329,7 @@ def simulate_command(command, session_state):
         filename = os.path.basename(target_path)
 
         parent_node = get_node_by_path(vfs, parent_dir_path)
-        if parent_node and parent_node["type"] == "dir":
+        if parent_node and parent_node.get("type") == "dir":
             if mode == ">" or filename not in parent_node["contents"]:
                 parent_node["contents"][filename] = file_content + "\n"
             else:
@@ -366,7 +365,7 @@ def simulate_command(command, session_state):
             new_path = resolve_path(cwd, target)
         
         node = get_node_by_path(vfs, new_path)
-        if node and node["type"] == "dir":
+        if node and node.get("type") == "dir":
             session_state["cwd"] = new_path
             return ""
         else:
@@ -377,7 +376,7 @@ def simulate_command(command, session_state):
             target_dir = resolve_path(cwd, parts[1])
         
         node = get_node_by_path(vfs, target_dir)
-        if node and node["type"] == "dir":
+        if node and node.get("type") == "dir":
             contents = node["contents"]
             items = list(contents.keys())
             lines = [f"total {len(items) * 4}"]
@@ -389,7 +388,8 @@ def simulate_command(command, session_state):
                 lines.append(f"{perms}  1 {session_state['user']} {session_state['user']} {size} Oct 12 10:00 {item}")
             return "\n".join(lines)
         else:
-            return f"ls: cannot access '{parts[1]}': No such file or directory"
+            target_arg = parts[1] if len(parts) > 1 else target_dir
+            return f"ls: cannot access '{target_arg}': No such file or directory"
     elif cmd_name == "cat":
         if len(parts) < 2:
             return "cat: missing file operand"
@@ -398,7 +398,7 @@ def simulate_command(command, session_state):
         filename = os.path.basename(target_path)
         
         parent_node = get_node_by_path(vfs, parent_dir_path)
-        if parent_node and filename in parent_node["contents"]:
+        if parent_node and parent_node.get("type") == "dir" and filename in parent_node["contents"]:
             sub = parent_node["contents"][filename]
             if isinstance(sub, str):
                 return sub.strip()
@@ -414,7 +414,7 @@ def simulate_command(command, session_state):
             parent_dir_path = os.path.dirname(target_path) or "/"
             filename = os.path.basename(target_path)
             parent_node = get_node_by_path(vfs, parent_dir_path)
-            if parent_node and parent_node["type"] == "dir":
+            if parent_node and parent_node.get("type") == "dir":
                 if filename not in parent_node["contents"]:
                     parent_node["contents"][filename] = ""
         return ""
@@ -426,7 +426,7 @@ def simulate_command(command, session_state):
             parent_dir_path = os.path.dirname(target_path) or "/"
             dirname = os.path.basename(target_path)
             parent_node = get_node_by_path(vfs, parent_dir_path)
-            if parent_node and parent_node["type"] == "dir":
+            if parent_node and parent_node.get("type") == "dir":
                 new_dir = {"type": "dir", "contents": {}}
                 parent_node["contents"][dirname] = new_dir
         return ""
@@ -437,7 +437,7 @@ def simulate_command(command, session_state):
         parent_dir_path = os.path.dirname(target_path) or "/"
         filename = os.path.basename(target_path)
         parent_node = get_node_by_path(vfs, parent_dir_path)
-        if parent_node and filename in parent_node["contents"]:
+        if parent_node and parent_node.get("type") == "dir" and filename in parent_node["contents"]:
             del parent_node["contents"][filename]
             return ""
         else:
@@ -451,7 +451,7 @@ def simulate_command(command, session_state):
         filename = os.path.basename(target_path)
         parent_node = get_node_by_path(vfs, parent_dir_path)
         file_data = ""
-        if parent_node and filename in parent_node["contents"]:
+        if parent_node and parent_node.get("type") == "dir" and filename in parent_node["contents"]:
             file_data = parent_node["contents"][filename]
         return f"\033[H\033[J--- [ Simulated Editor: {filename} ] ---\n{file_data}\n[ Read {len(file_data.splitlines())} lines ]\n^G Get Help  ^O WriteOut  ^R Read File  ^Y Prev Pg  ^K Cut Text  ^C Cur Pos\n^X Exit"
     elif cmd_name == "ping":
@@ -502,7 +502,10 @@ def send_output(channel, text):
     formatted = text.replace("\r\n", "\n").replace("\n", "\r\n")
     if not formatted.endswith("\r\n") and not text.endswith("\r"):
         formatted += "\r\n"
-    channel.send(formatted.encode("utf-8"))
+    try:
+        channel.send(formatted.encode("utf-8"))
+    except Exception:
+        pass
 
 def handle_ssh_session(client_sock, client_addr):
     """Handle incoming SSH client connection and interactive shell loop."""
@@ -560,7 +563,10 @@ def handle_ssh_session(client_sock, client_addr):
                 display_cwd = cwd
 
             prompt = f"{usr}@ubuntu-srv:{display_cwd}{sign} "
-            channel.send(prompt.encode("utf-8"))
+            try:
+                channel.send(prompt.encode("utf-8"))
+            except Exception:
+                break
             
             command_bytes = bytearray()
             in_escape = False
@@ -568,7 +574,10 @@ def handle_ssh_session(client_sock, client_addr):
             hist_idx = len(session_state["history"])
 
             while True:
-                chunk = channel.recv(1024)
+                try:
+                    chunk = channel.recv(1024)
+                except Exception:
+                    chunk = b""
                 if not chunk:
                     break
                 for b in chunk:
@@ -576,59 +585,62 @@ def handle_ssh_session(client_sock, client_addr):
                         escape_buf.append(b)
                         if len(escape_buf) >= 2:
                             seq = bytes(escape_buf)
-                            if seq == b'[A': # Up Arrow history navigation
+                            if seq == b'[A':
                                 history = session_state["history"]
                                 if history and hist_idx > 0:
                                     hist_idx -= 1
-                                    channel.send(b"\r\x1b[K" + prompt.encode('utf-8') + history[hist_idx].encode('utf-8'))
+                                    send_output(channel, f"\r\x1b[K{prompt}{history[hist_idx]}")
                                     command_bytes = bytearray(history[hist_idx].encode('utf-8'))
-                            elif seq == b'[B': # Down Arrow history navigation
+                            elif seq == b'[B':
                                 history = session_state["history"]
                                 if history and hist_idx < len(history) - 1:
                                     hist_idx += 1
-                                    channel.send(b"\r\x1b[K" + prompt.encode('utf-8') + history[hist_idx].encode('utf-8'))
+                                    send_output(channel, f"\r\x1b[K{prompt}{history[hist_idx]}")
                                     command_bytes = bytearray(history[hist_idx].encode('utf-8'))
                                 else:
                                     hist_idx = len(history)
-                                    channel.send(b"\r\x1b[K" + prompt.encode('utf-8'))
+                                    send_output(channel, f"\r\x1b[K{prompt}")
                                     command_bytes = bytearray()
                             in_escape = False
                             escape_buf.clear()
                         continue
 
-                    if b == 27: # ANSI escape sequence start
+                    if b == 27:
                         in_escape = True
                         escape_buf.clear()
                         escape_buf.append(b)
                         continue
-                    elif b == 3: # Ctrl+C interrupt
-                        channel.send(b"^C\r\n")
+                    elif b == 3:
+                        send_output(channel, "^C\r\n")
                         command_bytes = bytearray()
                         in_escape = False
                         break
-                    elif b in (127, 8): # Backspace / DEL handling
+                    elif b in (127, 8):
                         if len(command_bytes) > 0:
                             command_bytes.pop()
-                            channel.send(b"\b \b")
-                    elif b in (10, 13): # Enter key
-                        channel.send(b"\r\n")
+                            send_output(channel, "\b \b")
+                    elif b in (10, 13):
+                        send_output(channel, "\r\n")
                         break
-                    elif b == 9: # Tab autocompletion
+                    elif b == 9:
                         partial = command_bytes.decode('utf-8', errors='ignore')
                         token = partial.split()[-1] if partial.split() else ""
                         vfs = session_state["vfs"]
                         node = get_node_by_path(vfs, cwd)
-                        if node and node["type"] == "dir":
+                        if node and node.get("type") == "dir" and "contents" in node:
                             matches = [c for c in node["contents"].keys() if c.startswith(token)]
                             if len(matches) == 1:
                                 completion = matches[0][len(token):]
                                 command_bytes.extend(completion.encode('utf-8'))
-                                channel.send(completion.encode('utf-8'))
+                                send_output(channel, completion)
                             elif len(matches) > 1:
-                                channel.send(b"\r\n" + "  ".join(matches).encode('utf-8') + b"\r\n" + prompt.encode('utf-8') + command_bytes)
+                                send_output(channel, "\r\n" + "  ".join(matches) + "\r\n" + prompt + partial)
                     else:
                         command_bytes.append(b)
-                        channel.send(bytes([b]))
+                        try:
+                            channel.send(bytes([b]))
+                        except Exception:
+                            pass
 
                 if command_bytes.endswith(b"\n") or command_bytes.endswith(b"\r") or (chunk and (b'\n' in chunk or b'\r' in chunk) and not in_escape):
                     break
@@ -657,10 +669,8 @@ def handle_ssh_session(client_sock, client_addr):
                 send_output(channel, "Connection closed.")
                 break
 
-            # Try local virtual filesystem simulation first
             output = simulate_command(command, session_state)
 
-            # Fall back to Gemini API if local simulation returns None (with RPM pacing)
             if output is None:
                 try:
                     console.print("[yellow][*] Pacing before Gemini API call (respecting RPM)...[/yellow]")
@@ -688,7 +698,7 @@ def handle_ssh_session(client_sock, client_addr):
                             resp = chat.send_message(f"Current user: {session_state['user']}, Current directory: {session_state['cwd']}. User executed command: {command}")
                             if resp and resp.text:
                                 break
-                        except Exception as sub_e:
+                        except Exception:
                             continue
                     
                     output = resp.text if resp and resp.text else f"bash: {command}: command not found"
@@ -699,7 +709,7 @@ def handle_ssh_session(client_sock, client_addr):
             if output:
                 send_output(channel, output)
             
-        except Exception as e:
+        except Exception:
             break
 
     duration = (datetime.datetime.now() - session_state["start_time"]).total_seconds()
@@ -712,8 +722,14 @@ def handle_ssh_session(client_sock, client_addr):
         "commands_executed": session_state["command_count"]
     })
 
-    channel.close()
-    transport.close()
+    try:
+        channel.close()
+    except Exception:
+        pass
+    try:
+        transport.close()
+    except Exception:
+        pass
     console.print(f"[dim][- ] Connection closed for {client_ip}[/dim]")
 
 def main():
@@ -725,16 +741,32 @@ def main():
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.bind((args.host, args.port))
+    try:
+        sock.bind((args.host, args.port))
+    except OSError as e:
+        console.print(f"[bold red][!] Error binding to {args.host}:{args.port}: {e}[/bold red]")
+        sys.exit(1)
+
     sock.listen(100)
 
     console.print(Panel(f"Advanced Linux Honeypot Active on {args.host}:{args.port}", border_style="magenta"))
 
     while True:
-        client_sock, client_addr = sock.accept()
-        t = threading.Thread(target=handle_ssh_session, args=(client_sock, client_addr))
-        t.daemon = True
-        t.start()
+        try:
+            client_sock, client_addr = sock.accept()
+            t = threading.Thread(target=handle_ssh_session, args=(client_sock, client_addr))
+            t.daemon = True
+            t.start()
+        except KeyboardInterrupt:
+            console.print("\n[bold yellow][*] Shutting down honeypot server...[/bold yellow]")
+            break
+        except Exception as e:
+            console.print(f"[red][- ] Error accepting connection: {e}[/red]")
+
+    try:
+        sock.close()
+    except Exception:
+        pass
 
 if __name__ == "__main__":
     main()
