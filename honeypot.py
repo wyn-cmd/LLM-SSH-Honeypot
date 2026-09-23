@@ -31,8 +31,8 @@ else:
 LOG_FILE = "honeypot_attacks.json"
 ALERT_FILE = "alerts.log"
 
+# append security event telemetry to json log file
 def log_attack(data):
-    """Append security event telemetry to JSON log file."""
     logs = []
     if os.path.exists(LOG_FILE):
         try:
@@ -44,8 +44,8 @@ def log_attack(data):
     with open(LOG_FILE, "w", encoding="utf-8") as f:
         json.dump(logs, f, indent=2)
 
+# write high-priority security alerts to alert log file
 def log_alert(message):
-    """Write high-priority security alerts to alert log file."""
     timestamp = datetime.datetime.now().isoformat()
     alert_entry = f"[{timestamp}] ALERT: {message}\n"
     try:
@@ -55,15 +55,15 @@ def log_alert(message):
         pass
     console.print(f"[bold red][SECURITY ALERT] {message}[/bold red]")
 
+# paramiko server interface for handling ssh auth and channels
 class HoneypotServer(paramiko.ServerInterface):
-    """Paramiko server interface for handling SSH authentication and channels."""
     def __init__(self, client_ip):
         self.client_ip = client_ip
         self.username = ""
         self.password = ""
 
+    # accept all passwords and log the attempts
     def check_auth_password(self, username, password):
-        """Accept all passwords and log authentication attempts."""
         self.username = username
         self.password = password
         console.print(f"[bold red][!] Auth attempt from {self.client_ip} | User: {username} | Pass: {password}[/bold red]")
@@ -76,24 +76,24 @@ class HoneypotServer(paramiko.ServerInterface):
         })
         return paramiko.AUTH_SUCCESSFUL
 
+    # accept public key auth attempts
     def check_auth_publickey(self, username, key):
-        """Accept public key authentication attempts."""
         self.username = username
         console.print(f"[bold yellow][!] Public key auth attempt from {self.client_ip} | User: {username}[/bold yellow]")
         return paramiko.AUTH_SUCCESSFUL
 
+    # approve incoming session channel requests
     def check_channel_request(self, kind, chanid):
-        """Approve incoming session channel requests."""
         if kind == 'session':
             return paramiko.OPEN_SUCCEEDED
         return paramiko.OPEN_FAILED_ADMINISTRATIVELY_PROHIBITED
 
+    # approve shell invocation requests
     def check_channel_shell_request(self, channel):
-        """Approve shell invocation requests."""
         return True
 
+    # approve pty allocation requests
     def check_channel_pty_request(self, channel, term, width, height, pxwidth, pxheight, modes):
-        """Approve pseudo-terminal allocation requests."""
         return True
 
 FULL_LINUX_VFS = {
@@ -241,8 +241,8 @@ FULL_LINUX_VFS = {
     }
 }
 
+# resolve relative or absolute paths against current working directory
 def resolve_path(cwd, path):
-    """Resolve relative or absolute paths against current working directory."""
     if not path:
         return cwd
     if path.startswith("/"):
@@ -259,8 +259,8 @@ def resolve_path(cwd, path):
             resolved.append(p)
     return "/" + "/".join(resolved)
 
+# get virtual filesystem node or file content by absolute path
 def get_node_by_path(vfs_root, path):
-    """Retrieve virtual filesystem node dictionary or file content by absolute path."""
     parts = [p for p in path.split("/") if p]
     curr = vfs_root["/"]
     if not parts:
@@ -272,8 +272,8 @@ def get_node_by_path(vfs_root, path):
             return None
     return curr
 
+# simulate common linux commands locally in the vfs
 def simulate_command(command, session_state):
-    """Simulate common Linux commands locally within the virtual filesystem."""
     cmd_trimmed = command.strip()
     parts = cmd_trimmed.split()
     cmd_name = parts[0] if parts else ""
@@ -495,8 +495,8 @@ def simulate_command(command, session_state):
         return "Python 3.10.12 (main, Nov 20 2023, 15:14:05) [GCC 11.4.0] on linux\nType \"help\", \"copyright\", \"credits\" or \"license\" for more information.\n>>> print('Interactive shell active')\nInteractive shell active\n>>> exit()"
     return None
 
+# normalize line endings to CRLF and send text over ssh
 def send_output(channel, text):
-    """Normalize line endings to CRLF and send text across SSH channel."""
     if isinstance(text, bytes):
         text = text.decode("utf-8", errors="ignore")
     formatted = text.replace("\r\n", "\n").replace("\n", "\r\n")
@@ -504,8 +504,8 @@ def send_output(channel, text):
         formatted += "\r\n"
     channel.send(formatted.encode("utf-8"))
 
+# handle incoming ssh client connection and interactive shell loop
 def handle_ssh_session(client_sock, client_addr):
-    """Handle incoming SSH client connection and interactive shell loop."""
     client_ip = client_addr[0]
     console.print(f"[bold green][+] Incoming connection from {client_ip}:{client_addr[1]}[/bold green]")
     
@@ -716,8 +716,8 @@ def handle_ssh_session(client_sock, client_addr):
     transport.close()
     console.print(f"[dim][- ] Connection closed for {client_ip}[/dim]")
 
+# start tcp server and spawn worker threads for ssh connections
 def main():
-    """Start TCP server and spawn worker threads for incoming SSH connections."""
     parser = argparse.ArgumentParser(description="LLM-Powered Intelligent SSH Honeypot")
     parser.add_argument("--host", default="0.0.0.0", help="Listen host")
     parser.add_argument("--port", type=int, default=2222, help="Listen port")
