@@ -1,3 +1,5 @@
+# Advanced LLM-Powered SSH Honeypot
+
 import os
 import sys
 import socket
@@ -38,7 +40,7 @@ def log_attack(data):
         try:
             with open(LOG_FILE, "r", encoding="utf-8") as f:
                 logs = json.load(f)
-        except:
+        except Exception:
             pass
     logs.append(data)
     with open(LOG_FILE, "w", encoding="utf-8") as f:
@@ -51,7 +53,7 @@ def log_alert(message):
     try:
         with open(ALERT_FILE, "a", encoding="utf-8") as f:
             f.write(alert_entry)
-    except:
+    except Exception:
         pass
     console.print(f"[bold red][SECURITY ALERT] {message}[/bold red]")
 
@@ -469,7 +471,7 @@ def simulate_command(command, session_state):
             "event": "package_manager_action",
             "command": command
         })
-        return f"Reading package lists... Done\nBuilding dependency tree... Done\nReading state information... Done\nCalculating upgrade... Done\n0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded."
+        return "Reading package lists... Done\nBuilding dependency tree... Done\nReading state information... Done\nCalculating upgrade... Done\n0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded."
     elif cmd_name in ["wget", "curl"]:
         url = parts[1] if len(parts) > 1 else "unknown"
         console.print(f"[bold magenta][MALWARE STAGED] Payload download requested from URL: {url}[/bold magenta]")
@@ -688,7 +690,7 @@ def handle_ssh_session(client_sock, client_addr):
                             resp = chat.send_message(f"Current user: {session_state['user']}, Current directory: {session_state['cwd']}. User executed command: {command}")
                             if resp and resp.text:
                                 break
-                        except Exception as sub_e:
+                        except Exception:
                             continue
                     
                     output = resp.text if resp and resp.text else f"bash: {command}: command not found"
@@ -699,7 +701,7 @@ def handle_ssh_session(client_sock, client_addr):
             if output:
                 send_output(channel, output)
             
-        except Exception as e:
+        except Exception:
             break
 
     duration = (datetime.datetime.now() - session_state["start_time"]).total_seconds()
@@ -731,10 +733,13 @@ def main():
     console.print(Panel(f"Advanced Linux Honeypot Active on {args.host}:{args.port}", border_style="magenta"))
 
     while True:
-        client_sock, client_addr = sock.accept()
-        t = threading.Thread(target=handle_ssh_session, args=(client_sock, client_addr))
-        t.daemon = True
-        t.start()
+        try:
+            client_sock, client_addr = sock.accept()
+            t = threading.Thread(target=handle_ssh_session, args=(client_sock, client_addr))
+            t.daemon = True
+            t.start()
+        except Exception as e:
+            console.print(f"[red][-] Socket accept error: {e}[/red]")
 
 if __name__ == "__main__":
     main()
