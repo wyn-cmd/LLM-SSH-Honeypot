@@ -39,22 +39,34 @@ def log_attack(data):
     if os.path.exists(LOG_FILE):
         try:
             with open(LOG_FILE, "r", encoding="utf-8") as f:
-                logs = json.load(f)
-        except Exception:
-            pass
+                existing = json.load(f)
+        # a file we cannot read or parse is reported rather than silently discarded
+        except (OSError, json.JSONDecodeError) as e:
+            console.print(f"[yellow][-] Cannot read {LOG_FILE} ({e}); starting a new event list[/yellow]")
+            existing = []
+        # only a list of events can be appended to, so anything else is replaced loudly
+        if isinstance(existing, list):
+            logs = existing
+        else:
+            console.print(f"[yellow][-] {LOG_FILE} does not hold a list of events; starting a new event list[/yellow]")
     logs.append(data)
-    with open(LOG_FILE, "w", encoding="utf-8") as f:
-        json.dump(logs, f, indent=2)
+    # losing a write must not take the session down, but it must not pass unnoticed either
+    try:
+        with open(LOG_FILE, "w", encoding="utf-8") as f:
+            json.dump(logs, f, indent=2)
+    except OSError as e:
+        console.print(f"[red][-] Cannot write {LOG_FILE} ({e}); event not persisted[/red]")
 
 # write high-priority security alerts to alert log file
 def log_alert(message):
     timestamp = datetime.datetime.now().isoformat()
     alert_entry = f"[{timestamp}] ALERT: {message}\n"
+    # the console line below still fires, so a failed append only downgrades the alert
     try:
         with open(ALERT_FILE, "a", encoding="utf-8") as f:
             f.write(alert_entry)
-    except Exception:
-        pass
+    except OSError as e:
+        console.print(f"[red][-] Cannot write {ALERT_FILE} ({e}); alert not persisted[/red]")
     console.print(f"[bold red][SECURITY ALERT] {message}[/bold red]")
 
 # paramiko server interface for handling ssh auth and channels
