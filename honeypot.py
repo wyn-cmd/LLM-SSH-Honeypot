@@ -80,6 +80,8 @@ class HoneypotServer(paramiko.ServerInterface):
     def check_auth_password(self, username, password):
         self.username = username
         self.password = password
+        if not username or not password:
+            return paramiko.AUTH_FAILED
         console.print(f"[bold red][!] Auth attempt from {self.client_ip} | User: {username} | Pass: {password}[/bold red]")
         log_attack({
             "timestamp": datetime.datetime.now().isoformat(),
