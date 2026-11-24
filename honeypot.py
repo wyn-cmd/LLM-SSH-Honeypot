@@ -259,6 +259,8 @@ FULL_LINUX_VFS = {
 
 # resolve relative or absolute paths against current working directory
 def resolve_path(cwd, path):
+    if not isinstance(path, str):
+        raise TypeError("path must be a string")
     if not path:
         return cwd
     if path.startswith("/"):
